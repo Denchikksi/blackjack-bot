@@ -1,9 +1,9 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import random
-
+import os
 # ⛔ ТВОЙ ТОКЕН ОТ BotFather
-TOKEN = "8596289462:AAFV_p4lnZprTEDrQ8b_Jk7dIkAf7isBIbM"
+TOKEN = os.environ.get("BOT_TOKEN") or os.environ["TELEGRAM_BOT_TOKEN"]
 
 # ===== ДАННЫЕ ИГР, СТАТЫ И БАЛАНСОВ =====
 
