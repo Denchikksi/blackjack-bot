@@ -2,9 +2,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import random
 
-# ⛔ СЮДА ВСТАВЬ СВОЙ РЕАЛЬНЫЙ ТОКЕН ОТ BotFather
-TOKEN = "8596289462:AAFV_p4lnZprTEDrQ8b_Jk7dIkAf7isBIbM"
-
+import os
+TOKEN = os.environ["BOT_TOKEN"]
 # Игры по chat_id
 games = {}  # chat_id -> { 'players': {user_id: {...}, ...}, 'order': [...], 'turn': int, 'started': bool }
 
