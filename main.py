@@ -3,12 +3,15 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Токен берём из переменной окружения BOT_TOKEN (в Replit → Secrets)
-TOKEN = os.environ["BOT_TOKEN"]
+# === ТОКЕН ===
+# Поддерживаем два варианта имени переменной окружения, чтобы не путаться:
+#   BOT_TOKEN             (как мы делали сами)
+#   TELEGRAM_BOT_TOKEN    (как предлагает Replit-агент)
+TOKEN = os.environ.get("BOT_TOKEN") or os.environ["TELEGRAM_BOT_TOKEN"]
 
-START_BALANCE = 1000  # стартовые фишки
+START_BALANCE = 1000  # стартовые фишки для нового игрока
 
-# ===== ДАННЫЕ ПО ИГРЕ, СТАТЕ И БАЛАНСАМ =====
+# ===== ДАННЫЕ ИГР, СТАТЫ И БАЛАНСОВ =====
 
 # games[chat_id] = {
 #   'players': {user_id: {'name', 'hand', 'stand', 'busted', 'bet'}},
@@ -17,13 +20,13 @@ START_BALANCE = 1000  # стартовые фишки
 #   'started': bool,
 #   'finished': bool
 # }
-games = {}
+games: dict[int, dict] = {}
 
 # stats[chat_id][user_id] = {'name', 'wins', 'losses', 'draws', 'busts'}
-stats = {}
+stats: dict[int, dict[int, dict]] = {}
 
 # balances[chat_id][user_id] = {'name', 'balance'}
-balances = {}
+balances: dict[int, dict[int, dict]] = {}
 
 # Визуальные карты Unicode
 cards = [
@@ -33,17 +36,17 @@ cards = [
     "🃑","🃒","🃓","🃔","🃕","🃖","🃗","🃘","🃙","🃚","🃛","🃝","🃞"
 ]
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+# ===== ВСПОМОГАТЕЛЬНЫЕ =====
 
 def card_value(card: str) -> int:
     idx = cards.index(card) % 13 + 1
     if idx == 1:
-        return 11      # туз
+        return 11
     if idx > 10:
-        return 10      # J,Q,K
-    return idx         # 2–10
+        return 10
+    return idx
 
-def score(hand):
+def score(hand: list[str]) -> int:
     total = sum(card_value(c) for c in hand)
     aces = sum(1 for c in hand if card_value(c) == 11)
     while total > 21 and aces > 0:
@@ -51,10 +54,10 @@ def score(hand):
         aces -= 1
     return total
 
-def draw_card():
+def draw_card() -> str:
     return random.choice(cards)
 
-def turn_keyboard():
+def turn_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Hit 🃏", callback_data="hit"),
           InlineKeyboardButton("Stand ✋", callback_data="stand")]]
@@ -82,18 +85,22 @@ def ensure_balance(chat_id: int, user_id: int, name: str):
     else:
         user_bal["name"] = name
 
-def format_game_state(game):
+def format_game_state(game: dict) -> str:
     lines = []
     for uid in game["order"]:
         p = game["players"][uid]
-        s = score(p["hand"]) if p["hand"] else 0
+        if p["hand"]:
+            s = score(p["hand"])
+            cards_str = " ".join(p["hand"])
+        else:
+            s = 0
+            cards_str = "—"
         status = ""
         if p["busted"]:
             status = " (перебор 💥)"
         elif p["stand"]:
             status = " (стоит)"
         bet_info = f", ставка: {p['bet']}" if p["bet"] else ""
-        cards_str = " ".join(p["hand"]) if p["hand"] else "—"
         lines.append(f"{p['name']}: {cards_str} = {s}{status}{bet_info}")
     return "\n".join(lines)
 
@@ -108,7 +115,7 @@ async def show_turn(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(chat_id, text, reply_markup=turn_keyboard())
 
-def all_players_done(game):
+def all_players_done(game: dict) -> bool:
     for uid in game["order"]:
         p = game["players"][uid]
         if not p["stand"] and not p["busted"]:
@@ -120,7 +127,7 @@ def all_players_done(game):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я бот Блэкджек 🎰\n\n"
-        "Формат: 1 на 1, без дилера, максимум 2 игрока в чате.\n\n"
+        "Формат: 1 на 1, максимум 2 игрока в чате, без дилера.\n\n"
         "Команды:\n"
         "/newgame – создать новую игру\n"
         "/join – присоединиться (до 2 игроков)\n"
@@ -128,7 +135,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/startgame – начать игру, когда оба в игре\n"
         "/rematch – реванш теми же игроками\n"
         "/status – показать текущие карты\n"
-        "/balance – твоё количество фишек\n"
+        "/balance – твой баланс фишек\n"
         "/stats – твоя статистика\n"
         "/top – топ игроков по победам\n"
         "/cancel – отменить игру"
@@ -146,7 +153,7 @@ async def cmd_newgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Создана новая игра!\n"
         "Игроки могут присоединиться командой /join.\n"
-        "Затем поставьте ставки /bet и запустите /startgame."
+        "Потом ставьте /bet и запускайте /startgame."
     )
 
 async def cmd_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,7 +163,7 @@ async def cmd_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     game = games.get(chat_id)
     if not game:
-        await update.message.reply_text("Сначала создайте игру командой /newgame.")
+        await update.message.reply_text("Сначала создайте игру /newgame.")
         return
     if game["started"]:
         await update.message.reply_text("Игра уже началась, присоединиться нельзя.")
@@ -194,13 +201,13 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     game = games.get(chat_id)
     if not game:
-        await update.message.reply_text("Сначала создайте игру командой /newgame.")
+        await update.message.reply_text("Сначала создайте игру /newgame.")
         return
     if user_id not in game["players"]:
-        await update.message.reply_text("Сначала присоединись к игре командой /join.")
+        await update.message.reply_text("Сначала присоединись к игре /join.")
         return
     if game["started"]:
-        await update.message.reply_text("Игра уже началась, ставку сейчас менять нельзя.")
+        await update.message.reply_text("Игра уже началась, ставку менять нельзя.")
         return
     if not context.args:
         await update.message.reply_text("Использование: /bet N\nНапример: /bet 50")
@@ -229,7 +236,7 @@ async def cmd_startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game = games.get(chat_id)
     if not game:
-        await update.message.reply_text("Сначала создайте игру командой /newgame.")
+        await update.message.reply_text("Сначала создайте игру /newgame.")
         return
     if game["started"]:
         await update.message.reply_text("Игра уже идёт.")
@@ -242,7 +249,7 @@ async def cmd_startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for uid, p in game["players"].items():
         ensure_balance(chat_id, uid, p["name"])
         bal = balances[chat_id][uid]["balance"]
-        bet = p["bet"] or 10  # если не поставил /bet — ставка по умолчанию 10
+        bet = p["bet"] or 10  # если не поставил ставку, по умолчанию 10
         if bet > bal:
             await update.message.reply_text(
                 f"{p['name']} не хватает фишек на ставку {bet}. Баланс: {bal}."
@@ -268,10 +275,10 @@ async def cmd_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game = games.get(chat_id)
     if not game:
-        await update.message.reply_text("Ещё не было игры. Используйте /newgame.")
+        await update.message.reply_text("Ещё не было игры. Используй /newgame.")
         return
     if not game["finished"]:
-        await update.message.reply_text("Текущая игра ещё не окончена. Доиграйте или /cancel.")
+        await update.message.reply_text("Игра ещё не окончена. Доиграйте или /cancel.")
         return
     if len(game["players"]) != 2:
         await update.message.reply_text("Для реванша нужно, чтобы играли 2 игрока.")
@@ -281,14 +288,14 @@ async def cmd_rematch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p["hand"] = []
         p["stand"] = False
         p["busted"] = False
-        # ставка остаётся прежней, можно изменить /bet перед /startgame
+        # ставка остаётся, можно поменять /bet
 
     game["started"] = False
     game["finished"] = False
 
     await update.message.reply_text(
         "Реванш! Игроки те же.\n"
-        "Можете изменить ставки /bet и снова запустить /startgame."
+        "Можете поменять ставки /bet и заново запустить /startgame."
     )
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -351,6 +358,7 @@ async def finish_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     game = games[chat_id]
     results = []
     pot = 0
+
     for uid in game["order"]:
         p = game["players"][uid]
         s = score(p["hand"])
@@ -366,13 +374,15 @@ async def finish_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     state = format_game_state(game)
     balance_info = ""
 
+    # никто не выжил
     if len(alive) == 0:
-        # оба перебор
         for uid, name, s, busted, bet in results:
             ensure_stats(chat_id, uid, name)
             stats[chat_id][uid]["losses"] += 1
         result_text = "Оба игрока с перебором 💥\nБанк сгорает, ставки не возвращаются."
         balance_info = "Баланс учитывает списанные ставки."
+
+    # один выжил
     elif len(alive) == 1:
         winner = alive[0]
         winner_id, winner_name, winner_score, _, _ = winner
@@ -396,6 +406,8 @@ async def finish_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             f"Баланс {winner_name}: {balances[chat_id][winner_id]['balance']}\n"
             f"Баланс {loser_name}: {balances[chat_id][loser_id]['balance']}"
         )
+
+    # оба живые, сравниваем очки
     else:
         a, b = alive[0], alive[1]
         a_id, a_name, a_score, _, a_bet = a
@@ -404,20 +416,15 @@ async def finish_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         ensure_stats(chat_id, a_id, a_name)
         ensure_stats(chat_id, b_id, b_name)
 
-        if a_score > b_score:
-            winner_id, winner_name, winner_score = a_id, a_name, a_score
-            loser_id, loser_name, loser_score = b_id, b_name, b_score
-        elif b_score > a_score:
-            winner_id, winner_name, winner_score = b_id, b_name, b_score
-            loser_id, loser_name, loser_score = a_id, a_name, a_score
-        else:
-            # ничья
+        # ничья по очкам
+        if a_score == b_score:
             stats[chat_id][a_id]["draws"] += 1
             stats[chat_id][b_id]["draws"] += 1
             ensure_balance(chat_id, a_id, a_name)
             ensure_balance(chat_id, b_id, b_name)
             balances[chat_id][a_id]["balance"] += a_bet
             balances[chat_id][b_id]["balance"] += b_bet
+
             result_text = (
                 f"Ничья! {a_name} и {b_name} оба с {a_score} очками 🤝"
             )
@@ -426,33 +433,36 @@ async def finish_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                 f"Баланс {a_name}: {balances[chat_id][a_id]['balance']}\n"
                 f"Баланс {b_name}: {balances[chat_id][b_id]['balance']}"
             )
-            text = f"Игра окончена!\n\n{state}\n\n{result_text}\n\n{balance_info}"
-            await context.bot.send_message(chat_id, text)
-            game["started"] = False
-            game["finished"] = True
-            return
+        else:
+            if a_score > b_score:
+                winner_id, winner_name, winner_score = a_id, a_name, a_score
+                loser_id, loser_name, loser_score = b_id, b_name, b_score
+            else:
+                winner_id, winner_name, winner_score = b_id, b_name, b_score
+                loser_id, loser_name, loser_score = a_id, a_name, a_score
 
-        ensure_balance(chat_id, winner_id, winner_name)
-        balances[chat_id][winner_id]["balance"] += pot
-        stats[chat_id][winner_id]["wins"] += 1
-        stats[chat_id][loser_id]["losses"] += 1
+            stats[chat_id][winner_id]["wins"] += 1
+            stats[chat_id][loser_id]["losses"] += 1
 
-        result_text = (
-            f"Победитель: {winner_name} с {winner_score} очками! 🎉\n"
-            f"Проиграл: {loser_name} ({loser_score} очков)"
-        )
-        balance_info = (
-            f"{winner_name} получает банк {pot} фишек.\n"
-            f"Баланс {winner_name}: {balances[chat_id][winner_id]['balance']}\n"
-            f"Баланс {losер_name}: {balances[chat_id][loser_id]['balance']}"
-        )
+            ensure_balance(chat_id, winner_id, winner_name)
+            balances[chat_id][winner_id]["balance"] += pot
+
+            result_text = (
+                f"Победитель: {winner_name} с {winner_score} очками! 🎉\n"
+                f"Проиграл: {loser_name} ({loser_score} очков)"
+            )
+            balance_info = (
+                f"{winner_name} получает банк {pot} фишек.\n"
+                f"Баланс {winner_name}: {balances[chat_id][winner_id]['balance']}\n"
+                f"Баланс {loser_name}: {balances[chat_id][loser_id]['balance']}"
+            )
 
     text = f"Игра окончена!\n\n{state}\n\n{result_text}\n\n{balance_info}"
     await context.bot.send_message(chat_id, text)
     game["started"] = False
     game["finished"] = True
 
-# ===== ОБРАБОТКА КНОПОК =====
+# ===== ОБРАБОТКА КНОПОК HIT/STAND =====
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -485,14 +495,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             player["busted"] = True
             text = (
                 f"{player['name']} взял карту: {player['hand'][-1]}\n"
-                f"{player['name']}: {' ".join(player['hand'])} = {s} (перебор 💥)\n\n"
+                f"{player['name']}: {' '.join(player['hand'])} = {s} (перебор 💥)\n\n"
                 "Ход переходит к следующему игроку."
             )
             await query.edit_message_text(text)
         else:
             text = (
                 f"{player['name']} взял карту: {player['hand'][-1]}\n"
-                f"{player['name']}: {' ".join(player['hand'])} = {s}\n\n"
+                f"{player['name']}: {' '.join(player['hand'])} = {s}\n\n"
                 "Жми Hit или Stand."
             )
             await query.edit_message_text(text, reply_markup=turn_keyboard())
@@ -501,7 +511,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         player["stand"] = True
         text = (
             f"{player['name']} остановился.\n"
-            f"{player['name']}: {' ".join(player['hand'])} = {score(player['hand'])}\n\n"
+            f"{player['name']}: {' '.join(player['hand'])} = {score(player['hand'])}\n\n"
             "Ход переходит к следующему игроку."
         )
         await query.edit_message_text(text)
@@ -523,6 +533,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("newgame", cmd_newgame))
     app.add_handler(CommandHandler("join", cmd_join))
@@ -535,6 +546,7 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CallbackQueryHandler(on_button))
+
     app.run_polling()
 
 if __name__ == "__main__":
